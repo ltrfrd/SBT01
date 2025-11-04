@@ -5,7 +5,7 @@
 # ===========================================================
 from sqlalchemy import Column, Integer, String
 from sqlalchemy.orm import relationship
-from backend.models.base import Base  # Root-level database.py
+from database import Base  # Root-level database.py
 from .associations import route_schools  # associations.py is in the same folder
 
 class School(Base):

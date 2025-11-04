@@ -5,7 +5,7 @@
 # ===========================================================
 from sqlalchemy import Column, Integer, ForeignKey, DateTime, Enum
 from sqlalchemy.orm import relationship
-from backend.models.base import Base  # Root-level
+from database import Base  # Root-level
 import enum
 
 # -----------------------------------------------------------

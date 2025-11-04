@@ -6,7 +6,7 @@
 
 from sqlalchemy import Column, Integer, String
 from sqlalchemy.orm import relationship
-from backend.models.base import Base  # Correct import path for this project
+from database import Base  # Correct import path for this project
 
 # -----------------------------------------------------------
 # Driver model

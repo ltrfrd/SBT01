@@ -5,7 +5,7 @@
 # ===========================================================
 from sqlalchemy import Column, Integer, String, ForeignKey
 from sqlalchemy.orm import relationship
-from backend.models.base import Base  # Root-level
+from database import Base  # Root-level
 from .associations import route_schools  # Many-to-many table
 
 # -----------------------------------------------------------

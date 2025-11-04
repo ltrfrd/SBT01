@@ -11,7 +11,7 @@ from .driver import Driver
 from .school import School
 from .student import Student
 from .route import Route
-from .stop import Stop
+from .stop import Stop, StopType
 from .run import Run
 from .payroll import Payroll
 from .associations import route_schools  # Many-to-many table
@@ -22,7 +22,8 @@ __all__ = [
     "School",
     "Student",
     "Route",
-    "Stop", "StopType",
+    "Stop",
+    "StopType",
     "Run",
     "Payroll",
     "route_schools",

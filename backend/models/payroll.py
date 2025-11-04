@@ -5,7 +5,7 @@
 # ===========================================================
 from sqlalchemy import Column, Integer, Date, Time, Boolean, ForeignKey, Numeric
 from sqlalchemy.orm import relationship
-from backend.models.base import Base # Root-level
+from database import Base # Root-level
 from datetime import datetime, timedelta
 
 class Payroll(Base):
