@@ -207,3 +207,71 @@ def delete_stop(stop_id: int, db: Session = Depends(get_db)):
         db.rollback()                                         # Roll back transaction safely
         raise_conflict_if_unique(e)                           # Convert UNIQUE violations to HTTP 409
         raise HTTPException(status_code=400, detail="Integrity error")  # Other DB errors → 400
+    
+    # -----------------------------------------------------------
+# PUT /stops/{stop_id}/reorder → Move stop to new position
+# -----------------------------------------------------------
+@router.put("/{stop_id}/reorder", response_model=StopOut)
+def reorder_stop(stop_id: int, payload: schemas.StopReorder, db: Session = Depends(get_db)):
+
+    try:                                                                    # Protected transaction
+
+        stop = db.get(stop_model.Stop, stop_id)                             # Load stop
+        if not stop:                                                        # If not found
+            raise HTTPException(status_code=404, detail="Stop not found")
+
+        route_id = stop.route_id                                            # Save route id
+        old_seq = stop.sequence                                             # Save current position
+
+        # Get current max sequence in route
+        max_seq = (
+            db.query(func.max(stop_model.Stop.sequence))
+            .filter(stop_model.Stop.route_id == route_id)
+            .scalar()
+        ) or 0
+
+        # Clamp target position into valid range
+        new_seq = max(1, min(payload.new_sequence, max_seq))
+
+        if new_seq == old_seq:                                              # If nothing changes
+            return stop                                                     # No operation needed
+
+        OFFSET = 100000                                                     # Safe offset
+
+        # Phase 1: temporarily move current stop out of range
+        stop.sequence = stop.sequence + OFFSET
+        db.flush()
+
+        if new_seq < old_seq:
+            # Moving upward (e.g., 5 → 2)
+            impacted = (
+                db.query(stop_model.Stop)
+                .filter(stop_model.Stop.route_id == route_id)
+                .filter(stop_model.Stop.sequence >= new_seq)
+                .filter(stop_model.Stop.sequence < old_seq + OFFSET)
+                .all()
+            )
+            for s in impacted:
+                s.sequence += 1
+
+        else:
+            # Moving downward (e.g., 2 → 5)
+            impacted = (
+                db.query(stop_model.Stop)
+                .filter(stop_model.Stop.route_id == route_id)
+                .filter(stop_model.Stop.sequence > old_seq)
+                .filter(stop_model.Stop.sequence <= new_seq)
+                .all()
+            )
+            for s in impacted:
+                s.sequence -= 1
+
+        stop.sequence = new_seq                                             # Place stop at new position
+        db.commit()
+        db.refresh(stop)
+        return stop
+
+    except IntegrityError as e:
+        db.rollback()
+        raise_conflict_if_unique(e)
+        raise HTTPException(status_code=400, detail="Integrity error")

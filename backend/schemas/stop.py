@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict
 from enum import Enum
 
 from typing import Optional                               # Allow optional sequence
-from pydantic import BaseModel                            # Pydantic base class
+
 
 # -----------------------------------------------------------
 # Stop type enum: pickup or dropoff
@@ -52,3 +52,8 @@ class StopOut(BaseModel):
     latitude: float | None = None
     longitude: float | None = None
     model_config = ConfigDict(from_attributes=True)
+# -----------------------------------------------------------
+# Schema for reordering a stop
+# -----------------------------------------------------------
+class StopReorder(BaseModel):                       # Input model
+    new_sequence: int                               # Target sequence position
