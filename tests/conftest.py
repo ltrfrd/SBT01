@@ -2,24 +2,21 @@
 # tests/conftest.py
 # -----------------------------------------------------------------------------
 # Shared pytest fixtures:
-#   - Ensure repo root is on sys.path so `import backend` works (Windows-safe)
-#   - Create isolated SQLite DB per test (tmp_path)
+#   - PATH fix so `import backend` works on Windows
+#   - Isolated SQLite DB per test (tmp_path)
 #   - FastAPI TestClient with get_db overridden to use the test DB
 # =============================================================================
 
 # =============================================================================
 # PATH FIX (MUST BE FIRST)
-# -----------------------------------------------------------------------------
-# Pytest imports conftest.py before running tests.
-# If repo root isn't on sys.path, `import backend` will fail.
 # =============================================================================
 
 import os  # Path utilities
 import sys  # Python import path control
 
-PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))  # Repo root (SBT01)
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))  # Repo root
 if PROJECT_ROOT not in sys.path:
-    sys.path.insert(0, PROJECT_ROOT)  # Add repo root so `backend` is importable
+    sys.path.insert(0, PROJECT_ROOT)  # Ensure repo root is importable
 
 
 # =============================================================================
@@ -35,25 +32,30 @@ from app import app, get_db  # FastAPI app + DB dependency
 
 
 # =============================================================================
-# Fixtures
+# Database engine fixture (isolated per test)
 # =============================================================================
 
 @pytest.fixture()
 def db_engine(tmp_path):
     """Create a temporary SQLite engine for this test (isolated from sbt.db)."""
 
-    test_db_path = tmp_path / "test_sbt.db"  # Unique per-test temp DB file
+    test_db_path = tmp_path / "test_sbt.db"  # Unique temp DB file per test
 
     engine = create_engine(
-        f"sqlite:///{test_db_path}",  # File-based SQLite inside tmp directory
-        connect_args={"check_same_thread": False},  # Required for TestClient threads
+        f"sqlite:///{test_db_path}",  # File-based SQLite in temp directory
+        connect_args={"check_same_thread": False},  # Needed for TestClient threads
+        pool_pre_ping=True,  # Helps avoid stale connections
     )
 
-    Base.metadata.create_all(bind=engine)  # Create tables fresh
+    Base.metadata.create_all(bind=engine)  # Create tables
     yield engine  # Provide engine to tests
     Base.metadata.drop_all(bind=engine)  # Drop tables after test
     engine.dispose()  # Release file handles (important on Windows)
 
+
+# =============================================================================
+# Test client fixture (overrides get_db to use db_engine)
+# =============================================================================
 
 @pytest.fixture()
 def client(db_engine):
@@ -66,19 +68,21 @@ def client(db_engine):
     )
 
     def override_get_db():
-        db = TestingSessionLocal()  # New session per request
+        db = TestingSessionLocal()
         try:
             yield db
+            db.commit()  # Flush/close transaction cleanly (prevents SQLite locks)
+        except Exception:
+            db.rollback()  # Prevent open transactions holding locks
+            raise
         finally:
-            db.close()
+            db.close()  # Always release connection
 
-    # Override dependency for this test
-    app.dependency_overrides[get_db] = override_get_db
+    app.dependency_overrides[get_db] = override_get_db  # Override DB dependency
 
-    from fastapi.testclient import TestClient  # Imported here to keep fixture self-contained
+    from fastapi.testclient import TestClient
 
     with TestClient(app) as c:
         yield c
 
-    # Remove overrides so they don't leak into other tests
-    app.dependency_overrides.clear()
+    app.dependency_overrides.clear()  # Remove overrides after test
