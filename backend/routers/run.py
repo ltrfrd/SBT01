@@ -6,32 +6,30 @@
 # ===========================================================
 
 from fastapi import APIRouter, Depends, HTTPException, status  # FastAPI helpers
-from sqlalchemy.orm import Session                              # Database session
-from datetime import datetime                                   # For timestamps
-from typing import List                                          # For list responses
-from database import get_db                                      # DB dependency
-from backend import schemas                                      # Pydantic schemas
-from backend.models import run as run_model                      # Run model
-from backend.models import driver as driver_model                # Driver model
-from backend.models import route as route_model                  # Route model
+from sqlalchemy.orm import Session  # Database session
+from datetime import datetime  # For timestamps
+from typing import List  # For list responses
+from database import get_db  # DB dependency
+from backend import schemas  # Pydantic schemas
+from backend.models import run as run_model  # Run model
+from backend.models import driver as driver_model  # Driver model
+from backend.models import route as route_model  # Route model
 from backend.schemas.run import RunStart, RunOut
-from backend.models.run import Run
-
+# --- Run Schemas (direct import to avoid __init__ re-export dependency) ---
+from backend.schemas.run import RunStart  # Schema used to start/create a run (POST /runs)
 # -----------------------------------------------------------
 # Router setup
 # -----------------------------------------------------------
 router = APIRouter(
-    prefix="/runs",    # Base URL path
-    tags=["Runs"]      # Swagger section title
+    prefix="/runs", tags=["Runs"]  # Base URL path  # Swagger section title
 )
+
 
 # -----------------------------------------------------------
 # POST /runs → Manually create a run (optional)
 # -----------------------------------------------------------
 @router.post("/", response_model=schemas.RunOut, status_code=status.HTTP_201_CREATED)
-def create_run(run: schemas.RunStart, db: Session = Depends(get_db)):
-
-    """Create a new run manually (usually handled automatically)."""
+def create_run(run: RunStart, db: Session = Depends(get_db)):  # Strongly typed RunStart payload    """Create a new run manually (usually handled automatically)."""
     driver = db.get(driver_model.Driver, run.driver_id)
     if not driver:
         raise HTTPException(status_code=404, detail="Driver not found")
@@ -46,14 +44,11 @@ def create_run(run: schemas.RunStart, db: Session = Depends(get_db)):
     db.refresh(new_run)
     return new_run
 
+
 # -----------------------------------------------------------
 # POST /runs/start → Start a run (matches tests)
 # -----------------------------------------------------------
 
-# POST /runs/start → Start a run (matches tests)
-# -----------------------------------------------------------
-
-from backend.schemas.run import RunStart, RunOut
 
 @router.post("/start", response_model=RunOut)
 def start_run(run: RunStart, db: Session = Depends(get_db)):
@@ -73,7 +68,7 @@ def start_run(run: RunStart, db: Session = Depends(get_db)):
     db.add(new_run)
     db.commit()
     db.refresh(new_run)
-    return new_run   # ✅ REMOVE THE DOT
+    return new_run  # ✅ REMOVE THE DOT
 
 
 # -----------------------------------------------------------
@@ -94,6 +89,7 @@ def end_run(run_id: int, db: Session = Depends(get_db)):
     db.refresh(run)
     return run
 
+
 # -----------------------------------------------------------
 # GET /runs → Retrieve all runs
 # -----------------------------------------------------------
@@ -101,6 +97,7 @@ def end_run(run_id: int, db: Session = Depends(get_db)):
 def get_all_runs(db: Session = Depends(get_db)):
     """List all runs for all drivers and routes."""
     return db.query(run_model.Run).all()
+
 
 # -----------------------------------------------------------
 # GET /runs/{run_id} → Retrieve one run

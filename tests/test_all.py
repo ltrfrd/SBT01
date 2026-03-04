@@ -7,57 +7,24 @@ import json
 import time
 from fastapi.testclient import TestClient
 
-# PATH FIX
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from app import app, get_db
-from database import SessionLocal, Base, engine
 
-client = TestClient(app)
 
-@pytest.fixture(autouse=True)
-def setup_db():
-    from sqlalchemy import inspect
-    engine.dispose()
-    db_path = pathlib.Path("sbt.db")
-    if db_path.exists():
-        try:
-            os.remove(db_path)
-        except PermissionError:
-            backup_path = db_path.with_suffix(".bak")
-            if backup_path.exists():
-                backup_path.unlink()
-            os.rename(db_path, backup_path)
-    Base.metadata.create_all(bind=engine)
-    yield
-    Base.metadata.drop_all(bind=engine)
-    engine.dispose()
-    backup_path = pathlib.Path("sbt.db.bak")
-    if backup_path.exists():
-        try:
-            backup_path.unlink()
-        except:
-            pass
-
-def override_get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
-
-app.dependency_overrides[get_db] = override_get_db
-
+# =============================================================================
+# tests/test_all.py
+# -----------------------------------------------------------------------------
+# End-to-end API tests (using isolated DB via tests/conftest.py client fixture)
+# =============================================================================
 
 # ROOT
-def test_root():
+def test_root(client):
     r = client.get("/")
     assert r.status_code == 200
-    assert "BST backend" in r.text
+    assert r.json()["status"] == "BST01 backend is running"  # Exact expected status message
 
 
 # DRIVER CRUD
-def test_driver_crud():
+def test_driver_crud(client):
     payload = {"name": "John Doe", "email": "john@example.com", "phone": "12345"}
     r = client.post("/drivers/", json=payload)
     assert r.status_code in (200, 201)
@@ -75,13 +42,15 @@ def test_driver_crud():
 
     r = client.delete(f"/drivers/{driver_id}")
     assert r.status_code in (200, 204)
+
     r = client.get(f"/drivers/{driver_id}")
     assert r.status_code == 404
 
 
 # LOGIN / SESSION
-def test_login_logout():
+def test_login_logout(client):
     client.post("/drivers/", json={"name": "Login Test", "email": "login@test.com", "phone": "999"})
+
     r = client.post("/login", json={"driver_id": 1})
     assert r.status_code == 200
 
@@ -96,50 +65,80 @@ def test_login_logout():
 
 
 # WEBSOCKET GPS
-def test_websocket_gps():
-    with TestClient(app) as client:
-        client.post("/drivers/", json={"name": "D", "email": "d@d.com", "phone": "000"})
-        client.post("/login", json={"driver_id": 1})
+def test_websocket_gps(client):
+    client.post("/drivers/", json={"name": "D", "email": "d@d.com", "phone": "000"})
+    client.post("/login", json={"driver_id": 1})
 
-        # FIX: add route_number
-        r = client.post("/routes/", json={"route_number": "R1", "unit_number": "Test", "driver_id": 1})
-        route_id = r.json()["id"]
+    # FIX: add route_number
+    r = client.post("/routes/", json={"route_number": "R1", "unit_number": "Test", "driver_id": 1})
+    assert r.status_code in (200, 201)
+    route_id = r.json()["id"]
 
-        r = client.post("/runs/start", json={"driver_id": 1, "route_id": route_id, "run_type": "AM"})
-        run_id = r.json()["id"]
+    r = client.post("/runs/start", json={"driver_id": 1, "route_id": route_id, "run_type": "AM"})
+    assert r.status_code in (200, 201)
+    run_id = r.json()["id"]
 
-        with client.websocket_connect(f"/ws/gps/{run_id}") as ws:
-            ws.send_json({"lat": 40.7128, "lng": -74.0060})
-            data = ws.receive_json()
-            assert data["run_id"] == run_id
-            assert "progress" in data
+    with client.websocket_connect(f"/ws/gps/{run_id}") as ws:
+        ws.send_json({"lat": 40.7128, "lng": -74.0060})
+        data = ws.receive_json()
+        assert data["run_id"] == run_id
+        assert "progress" in data
 
 
 # ALERTS
-def test_alerts():
-    with TestClient(app) as client:
-        r = client.post("/drivers/", json={"name": "Driver", "email": "d@d.com", "phone": "000"})
-        driver_id = r.json()["id"]
-        client.post("/login", json={"driver_id": driver_id})
+def test_alerts(client):
+    r = client.post("/drivers/", json={"name": "Driver", "email": "d@d.com", "phone": "000"})
+    assert r.status_code in (200, 201)
+    driver_id = r.json()["id"]
 
-        # FIX: add route_number
-        r = client.post("/routes/", json={"route_number": "R1", "unit_number": "Bus-01", "driver_id": driver_id})
-        route_id = r.json()["id"]
+    client.post("/login", json={"driver_id": driver_id})
 
-        r = client.post("/stops/", json={
-            "name": "Park", "latitude": 40.7580, "longitude": -73.9855,
-            "type": "pickup", "route_id": route_id, "sequence": 1
-        })
-        stop_id = r.json()["id"]
+    # FIX: add route_number
+    r = client.post("/routes/", json={"route_number": "R1", "unit_number": "Bus-01", "driver_id": driver_id})
+    assert r.status_code in (200, 201)
+    route_id = r.json()["id"]
+    
+    # Create a school (required by StudentCreate: school_id)
+    r = client.post(
+    "/schools/",
+    json={
+        "name": "Test School",
+        "address": "123 Test St",  # Required field
+    },
+)
+    assert r.status_code in (200, 201) # Show validation error if 422
+    school_id = r.json()["id"]
 
-        client.post("/students/", json={
-            "name": "Kid", "stop_id": stop_id, "notification_distance_meters": 100
-        })
+    r = client.post(
+        "/stops/",
+        json={
+            "name": "Park",
+            "latitude": 40.7580,
+            "longitude": -73.9855,
+            "type": "pickup",
+            "route_id": route_id,
+            "sequence": 1,
+        },
+    )
+    assert r.status_code in (200, 201)
+    stop_id = r.json()["id"]
 
-        r = client.post("/runs/start", json={"driver_id": driver_id, "route_id": route_id, "run_type": "AM"})
-        run_id = r.json()["id"]
+    r = client.post(
+    "/students/",
+    json={
+        "name": "Kid",
+        "school_id": school_id,  # Required field
+        "stop_id": stop_id,
+        "notification_distance_meters": 100,
+    },
+)
+    assert r.status_code in (200, 201)
+    
+    r = client.post("/runs/start", json={"driver_id": driver_id, "route_id": route_id, "run_type": "AM"})
+    assert r.status_code in (200, 201)
+    run_id = r.json()["id"]
 
-        with client.websocket_connect(f"/ws/gps/{run_id}") as ws:
-            ws.send_json({"lat": 40.7580, "lng": -73.9855})
-            data = ws.receive_json()
-            assert "progress" in data
+    with client.websocket_connect(f"/ws/gps/{run_id}") as ws:
+        ws.send_json({"lat": 40.7580, "lng": -73.9855})
+        data = ws.receive_json()
+        assert "progress" in data
