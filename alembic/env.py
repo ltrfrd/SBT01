@@ -1,46 +1,100 @@
-from logging.config import fileConfig                                                     # Configure logging from alembic.ini
-from sqlalchemy import engine_from_config, pool                                            # Engine builder + pooling
-from alembic import context                                                               # Alembic migration context
-import os                                                                                 # Path utilities
-import sys                                                                                # Python path editing
+# ===========================================================
+# alembic/env.py — SBT01 Alembic Environment
+# -----------------------------------------------------------
+# Responsibilities:
+#   - Load SQLAlchemy metadata (Base.metadata) for autogenerate
+#   - Configure Alembic logging (exactly once)
+#   - Run migrations in offline or online mode
+# ===========================================================
 
-config = context.config                                                                   # Alembic config object
+from __future__ import annotations                       # Typing forward refs
 
-if config.config_file_name is not None:                                                   # If alembic.ini exists
-    fileConfig(config.config_file_name)                                                   # Load logging config
+# -----------------------------------------------------------
+# Standard library
+# -----------------------------------------------------------
+import os                                                 # Path utilities
+import sys                                                # sys.path editing
 
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))           # Add repo root to import path
+# -----------------------------------------------------------
+# Alembic / SQLAlchemy
+# -----------------------------------------------------------
+from logging.config import fileConfig                     # Logging from ini
+from sqlalchemy import engine_from_config                 # Build engine from ini
+from sqlalchemy import pool                               # Pool control
+from alembic import context                               # Alembic context
 
-from database import Base                                                                 # Import Base from root database.py (your project style)
+# -----------------------------------------------------------
+# Alembic config
+# -----------------------------------------------------------
+config = context.config                                   # Alembic config object
 
-target_metadata = Base.metadata                                                           # Metadata used for autogenerate
+# -----------------------------------------------------------
+# Logging (configure once)
+# -----------------------------------------------------------
+if config.config_file_name is not None:                   # Only if ini exists
+    fileConfig(config.config_file_name)                   # Configure logging once
 
-def run_migrations_offline() -> None:                                                     # Offline mode (generate SQL)
-    url = config.get_main_option("sqlalchemy.url")                                         # Read URL from alembic.ini
-    context.configure(                                                                    # Configure offline context
-        url=url,                                                                          # Database URL
-        target_metadata=target_metadata,                                                   # Model metadata
-        literal_binds=True,                                                               # Render values inline
-        dialect_opts={"paramstyle": "named"},                                              # Named params
+# -----------------------------------------------------------
+# Import path
+# - Ensure repo root is importable when running alembic
+# - Keeps "from database import Base" working reliably
+# -----------------------------------------------------------
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))  # Repo root path
+if REPO_ROOT not in sys.path:                             # Avoid duplicate path entries
+    sys.path.append(REPO_ROOT)                            # Add repo root to sys.path
+
+# -----------------------------------------------------------
+# Target metadata
+# - Used by `alembic revision --autogenerate`
+# -----------------------------------------------------------
+from database import Base                                  # Declarative base (root database.py)
+
+target_metadata = Base.metadata                            # Model metadata for autogenerate
+
+
+# -----------------------------------------------------------
+# run_migrations_offline
+# - Generates SQL script output without DB connection
+# -----------------------------------------------------------
+def run_migrations_offline() -> None:                      # Offline mode
+    url = config.get_main_option("sqlalchemy.url")         # URL from alembic.ini
+
+    context.configure(                                     # Configure Alembic context
+        url=url,                                           # DB URL
+        target_metadata=target_metadata,                   # Model metadata
+        literal_binds=True,                                # Inline literal values
+        dialect_opts={"paramstyle": "named"},              # Named parameters
     )
-    with context.begin_transaction():                                                     # Start transaction block
-        context.run_migrations()                                                          # Run migrations
 
-def run_migrations_online() -> None:                                                      # Online mode (apply to DB)
-    connectable = engine_from_config(                                                     # Build engine from alembic.ini
-        config.get_section(config.config_ini_section),                                     # Read config section
-        prefix="sqlalchemy.",                                                             # Only sqlalchemy.* keys
-        poolclass=pool.NullPool,                                                          # No pooling for migrations
+    with context.begin_transaction():                      # Begin offline transaction
+        context.run_migrations()                           # Run migrations
+
+
+# -----------------------------------------------------------
+# run_migrations_online
+# - Applies migrations to the DB using a real connection
+# -----------------------------------------------------------
+def run_migrations_online() -> None:                       # Online mode
+    connectable = engine_from_config(                      # Create engine from ini
+        config.get_section(config.config_ini_section),      # ini section dict
+        prefix="sqlalchemy.",                              # keys start with sqlalchemy.*
+        poolclass=pool.NullPool,                           # No pooling for migrations
     )
-    with connectable.connect() as connection:                                             # Connect to DB
-        context.configure(                                                                # Configure online context
-            connection=connection,                                                        # Live connection
-            target_metadata=target_metadata,                                               # Model metadata
+
+    with connectable.connect() as connection:              # Open DB connection
+        context.configure(                                 # Configure Alembic context
+            connection=connection,                         # Live connection
+            target_metadata=target_metadata,               # Model metadata
         )
-        with context.begin_transaction():                                                 # Start transaction block
-            context.run_migrations()                                                      # Run migrations
 
-if context.is_offline_mode():                                                             # If offline
-    run_migrations_offline()                                                              # Run offline migrations
-else:                                                                                     # Otherwise
-    run_migrations_online()                                                               # Run online migrations
+        with context.begin_transaction():                  # Begin transaction
+            context.run_migrations()                       # Run migrations
+
+
+# -----------------------------------------------------------
+# Entrypoint
+# -----------------------------------------------------------
+if context.is_offline_mode():                              # Offline mode?
+    run_migrations_offline()                               # Run offline migrations
+else:                                                      # Otherwise online
+    run_migrations_online()                                # Run online migrations
