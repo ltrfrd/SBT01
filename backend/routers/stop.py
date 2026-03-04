@@ -5,20 +5,34 @@
 # - Enforces UNIQUE(route_id, sequence) with safe shifting
 # - Supports append, insert, reorder, delete + normalize
 # ===========================================================
+# -----------------------------------------------------------
+# Imports
+# -----------------------------------------------------------
+from typing import List                                  # List typing
 
-from fastapi import APIRouter, Depends, HTTPException, status              # FastAPI imports
-from sqlalchemy.orm import Session                                         # SQLAlchemy session
-from typing import List                                                    # For type hinting lists
-from sqlalchemy import func, update                                        # MAX() + bulk UPDATE builder
-from sqlalchemy.exc import IntegrityError                                  # Catch DB constraint violations (UNIQUE, FK, etc.)
+from fastapi import APIRouter                            # Router
+from fastapi import Depends                              # Dependency injection
+from fastapi import HTTPException                         # HTTP errors
+from fastapi import status                                # Status codes
 
-from database import get_db                                                # DB dependency
-from backend import schemas                                                # Stop schemas
-from backend.models import stop as stop_model                              # Stop model
-from backend.schemas.stop import StopCreate, StopOut                       # Explicit schemas
-from backend.models.stop import Stop                                       # Direct Stop model (for normalize query)
-from backend.utils.db_errors import raise_conflict_if_unique               # Convert UNIQUE violations to HTTP 409                                                # Import DEBUG flag                            # Access DEBUG flag
-from backend.config import settings                                        # Import app settings
+from sqlalchemy import func                               # SQL MAX()
+from sqlalchemy import update                             # Bulk UPDATE
+from sqlalchemy.exc import IntegrityError                 # DB constraint errors
+from sqlalchemy.orm import Session                        # DB session type
+
+from database import get_db                               # DB dependency
+
+from backend.deps.admin import require_admin              # Admin dependency (used in Step 4B)
+
+from backend.models import stop as stop_model             # Stop model module
+from backend.models.stop import Stop                      # Stop model class (normalize query)
+
+from backend.schemas.stop import StopCreate               # Create schema
+from backend.schemas.stop import StopOut                  # Output schema
+from backend import schemas                               # Other stop schemas (StopUpdate/StopReorder)
+
+from backend.utils.db_errors import raise_conflict_if_unique  # 409 on UNIQUE violation
+
 # -----------------------------------------------------------
 # Router setup
 # -----------------------------------------------------------
@@ -127,6 +141,99 @@ def normalize_route_sequences(db: Session, route_id: int) -> None:
         s.sequence = desired_by_id[s.id]                                  # Set exact normalized value
     db.flush()                                                            # Flush final normalized values
 
+# -----------------------------------------------------------
+# GET /stops/validate/{route_id}
+# DEV TOOL — Validate route sequence integrity
+# - Checks duplicates
+# - Checks gaps
+# - Ensures sequences are exactly 1..N
+# - Read-only (no DB writes)
+# -----------------------------------------------------------
+@router.get("/validate/{route_id}")
+def validate_route_sequences(
+    route_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(require_admin),
+):
+
+    stops = (
+        db.query(stop_model.Stop)                               # Load stops for this route
+        .filter(stop_model.Stop.route_id == route_id)           # Filter by route
+        .order_by(stop_model.Stop.sequence.asc())               # Order by sequence
+        .all()                                                  # Materialize list
+    )
+
+    if not stops:                                               # If route has no stops
+        return {
+            "route_id": route_id,
+            "valid": True,
+            "message": "No stops found (empty route)."
+        }
+
+    sequences = [s.sequence for s in stops]                     # Extract sequence list
+    expected = list(range(1, len(stops) + 1))                   # Expected 1..N
+
+    duplicates = len(sequences) != len(set(sequences))          # Check duplicate sequences
+    gaps = sequences != expected                                # Check gap-free condition
+
+    return {
+        "route_id": route_id,
+        "valid": not duplicates and not gaps,
+        "total_stops": len(stops),
+        "sequences": sequences,
+        "expected": expected,
+        "has_duplicates": duplicates,
+        "has_gaps": gaps
+    }       
+# -----------------------------------------------------------
+# POST /stops/normalize/{route_id}
+# ADMIN TOOL — Force repair route sequences
+# - Rebuilds sequence as 1..N
+# - Keeps current ordering
+# - Uses collision-safe 2-phase logic
+# -----------------------------------------------------------
+# POST /stops/normalize/{route_id}
+# ADMIN TOOL — Force repair route sequences
+# -----------------------------------------------------------
+@router.post("/normalize/{route_id}")
+def force_normalize_route(
+    route_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(require_admin),
+):
+    try:                                                        # Protected DB operation
+
+        normalize_route_sequences(db, route_id)                # Repair sequence integrity
+        db.commit()                                            # Commit normalization
+
+        stops = (
+            db.query(stop_model.Stop)
+            .filter(stop_model.Stop.route_id == route_id)
+            .order_by(stop_model.Stop.sequence.asc())
+            .all()
+        )
+
+        return {
+            "route_id": route_id,
+            "status": "normalized",
+            "total_stops": len(stops),
+            "sequences": [s.sequence for s in stops],
+        }
+
+    # -----------------------------------------------------------
+    # IntegrityError handling
+    # -----------------------------------------------------------
+    except IntegrityError as e:                                # Catch DB constraint errors
+        db.rollback()                                          # Roll back transaction safely
+        raise_conflict_if_unique(
+            db,
+            e,
+            constraint_name="uq_stops_route_sequence",
+            sqlite_columns=("route_id", "sequence"),
+            detail="Stop sequence conflict for this route",
+        )
+        raise HTTPException(status_code=400, detail="Integrity error")
+
 
 # -----------------------------------------------------------
 # POST /stops → Create stop (append or insert)
@@ -182,9 +289,14 @@ def create_stop(payload: StopCreate, db: Session = Depends(get_db)):
 
     except IntegrityError as e:                                           # Catch DB constraint errors
         db.rollback()                                                     # Roll back transaction safely
-        raise_conflict_if_unique(db, e)                                   # Convert UNIQUE(route_id, sequence) to 409
-        raise HTTPException(status_code=400, detail="Integrity error")     # Other integrity issues
-
+        raise_conflict_if_unique(                                         # Raise 409 if UNIQUE violated
+            db,                                                           # DB session (dialect detection)
+            e,                                                            # IntegrityError instance
+            constraint_name="uq_stops_route_sequence",                     # Postgres constraint name
+            sqlite_columns=("route_id", "sequence"),                       # SQLite message fallback keys
+            detail="Stop sequence conflict for this route",                # Client-friendly 409 detail
+        )
+        raise HTTPException(status_code=400, detail="Integrity error")     # Other integrity issues → 400
 
 # -----------------------------------------------------------
 # GET /stops → List stops (optionally filter by route_id)
@@ -328,78 +440,6 @@ def reorder_stop(stop_id: int, payload: schemas.StopReorder, db: Session = Depen
             detail="Stop sequence conflict for this route",                   # Client-friendly 409 detail
         )
         raise HTTPException(status_code=400, detail="Integrity error")        # Other DB errors → 400
-# -----------------------------------------------------------
-# GET /stops/validate/{route_id}
-# DEV TOOL — Validate route sequence integrity
-# - Checks duplicates
-# - Checks gaps
-# - Ensures sequences are exactly 1..N
-# - Read-only (no DB writes)
-# -----------------------------------------------------------
-@router.get("/validate/{route_id}")
-def validate_route_sequences(route_id: int, db: Session = Depends(get_db)):
-
-    if not settings.DEBUG:                                         # Block in production
-        raise HTTPException(status_code=403, detail="Not available in production")
-    stops = (
-        db.query(stop_model.Stop)                               # Load stops for this route
-        .filter(stop_model.Stop.route_id == route_id)           # Filter by route
-        .order_by(stop_model.Stop.sequence.asc())               # Order by sequence
-        .all()                                                  # Materialize list
-    )
-
-    if not stops:                                               # If route has no stops
-        return {
-            "route_id": route_id,
-            "valid": True,
-            "message": "No stops found (empty route)."
-        }
-
-    sequences = [s.sequence for s in stops]                     # Extract sequence list
-    expected = list(range(1, len(stops) + 1))                   # Expected 1..N
-
-    duplicates = len(sequences) != len(set(sequences))          # Check duplicate sequences
-    gaps = sequences != expected                                # Check gap-free condition
-
-    return {
-        "route_id": route_id,
-        "valid": not duplicates and not gaps,
-        "total_stops": len(stops),
-        "sequences": sequences,
-        "expected": expected,
-        "has_duplicates": duplicates,
-        "has_gaps": gaps
-    }       
-# -----------------------------------------------------------
-# POST /stops/normalize/{route_id}
-# ADMIN TOOL — Force repair route sequences
-# - Rebuilds sequence as 1..N
-# - Keeps current ordering
-# - Uses collision-safe 2-phase logic
-# -----------------------------------------------------------
-@router.post("/normalize/{route_id}")
-def force_normalize_route(route_id: int, db: Session = Depends(get_db)):
-    
-    if not settings.DEBUG:                                         # Block in production
-        raise HTTPException(status_code=403, detail="Not available in production")
-    try:                                                            # Protected DB operation
-
-        normalize_route_sequences(db, route_id)                    # Repair sequence integrity
-        db.commit()                                                # Commit normalization
-
-        stops = (
-            db.query(stop_model.Stop)                               # Reload updated stops
-            .filter(stop_model.Stop.route_id == route_id)           # Filter by route
-            .order_by(stop_model.Stop.sequence.asc())               # Ordered output
-            .all()
-        )
-
-        return {
-            "route_id": route_id,
-            "status": "normalized",
-            "total_stops": len(stops),
-            "sequences": [s.sequence for s in stops]
-        }
 
    # -----------------------------------------------------------
 # IntegrityError handling
