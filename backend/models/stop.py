@@ -13,6 +13,7 @@ from sqlalchemy import (
     String,
     Float,
     Index,
+    Time, 
 )  # Add Index for DB performance
 from sqlalchemy.orm import relationship  # SQLAlchemy relationships
 from database import Base  # Root-level import
@@ -57,3 +58,43 @@ class Stop(Base):  # ORM model
     students = relationship(
         "Student", back_populates="stop"
     )  # Students linked to this stop
+
+
+# -----------------------------------------------------------
+# Stop type enum: pickup or dropoff
+# -----------------------------------------------------------
+class StopType(str, enum.Enum):
+    PICKUP = "pickup"   # Pickup stop
+    DROPOFF = "dropoff" # Dropoff stop
+
+
+# -----------------------------------------------------------
+# Stop model
+# -----------------------------------------------------------
+class Stop(Base):
+    __tablename__ = "stops"  # DB table name
+
+    __table_args__ = (
+        Index(
+            "ix_stops_route_id_sequence",
+            "route_id",
+            "sequence",
+        ),  # Speeds up route filter + ordering
+    )
+
+    id = Column(Integer, primary_key=True, index=True)             # Unique stop ID
+    sequence = Column(Integer, nullable=False)                     # True stop order on the route
+    type = Column(Enum(StopType), nullable=False)                  # pickup or dropoff
+    route_id = Column(Integer, ForeignKey("routes.id"), nullable=False)  # Linked route
+
+    name = Column(String(100), nullable=True)                      # Optional stop label
+    address = Column(String(255), nullable=True)                   # Optional stop address
+    planned_time = Column(Time, nullable=True)                     # Scheduled time shown on running board
+    latitude = Column(Float, nullable=True)                        # Optional latitude
+    longitude = Column(Float, nullable=True)                       # Optional longitude
+
+    # -------------------------------------------------------
+    # Relationships
+    # -------------------------------------------------------
+    route = relationship("Route", back_populates="stops")          # Each stop belongs to one route
+    students = relationship("Student", back_populates="stop")      # Students linked to this stop
